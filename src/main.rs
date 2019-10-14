@@ -1,16 +1,19 @@
+mod structs;
+use crate::structs::Entity;
 use mc_varint::{VarIntRead, VarIntWrite};
 use serde_json::json;
 use std::io::Result;
 use std::io::{Cursor, Read, Write};
 use std::net::TcpStream;
+use structs::Location;
 
 fn main() {
-    struct Location {
-        x: f32,
-        y: f32,
-    }
     let mut loggedin = false;
     let ipadress = "5.181.151.65:25565";
+    let mut me = Entity {
+        id: 0,
+        position: Location { x: 0, y: 0, z: 0 },
+    };
     match TcpStream::connect(ipadress) {
         Ok(mut stream) => {
             println!("Successfully connected to server {:?}", ipadress);
@@ -29,12 +32,12 @@ fn main() {
                 if !loggedin {
                     let packet_type = read_varint(&mut rest).unwrap().0;
                     let datalength = read_varint(&mut rest).unwrap_or((0, 0)).0 as usize;
-
+                    /*
                     println!(
                         "length: {}, packet id: {}, datalength: {}",
                         length, packet_type, datalength
                     );
-
+                    */
                     /* println!(
                         "PacketID: {} Length: {:?} Datalen:{:?} ",
                         packet, length, datalength
@@ -42,9 +45,7 @@ fn main() {
                     match packet_type {
                         2 => {
                             let uuid = read_string(&mut rest, datalength);
-                            dbg!(datalength, &uuid);
                             let datalength = read_varint(&mut rest).unwrap().0 as usize;
-                            dbg!(datalength);
                             let name = read_string(&mut rest, datalength);
                             println!("Logged in with Name: {} and UUID: {:?}", name, uuid);
                             loggedin = true;
@@ -68,11 +69,47 @@ fn main() {
                     );
                     */
                     match packet_type {
+                        0x01 => {
+                            let mut bit = [0; 4];
+                            rest.read_exact(&mut bit)
+                                .expect("Could not read Position Packet");
+                            let entityid = u32::from_be_bytes(bit);
+                            me.id = entityid;
+                            let mut bit = [0; 1];
+                            rest.read_exact(&mut bit)
+                                .expect("Could not read Position Packet");
+                            let gamemode = u8::from_be_bytes(bit);
+                            let mut bit = [0; 1];
+                            rest.read_exact(&mut bit)
+                                .expect("Could not read Position Packet");
+                            let dimension = i8::from_be_bytes(bit);
+                            let mut bit = [0; 1];
+                            rest.read_exact(&mut bit)
+                                .expect("Could not read Position Packet");
+                            let difficulty = u8::from_be_bytes(bit);
+                            let mut bit = [0; 1];
+                            rest.read_exact(&mut bit)
+                                .expect("Could not read Position Packet");
+                            let maxplayers = u8::from_be_bytes(bit);
+                            println!("Joined the Game! Gameinfo: Gamemode:{:?}, Dimension:{:?}, Difficulty:{:?}, Maxplayers:{:?}",gamemode, dimension, difficulty, maxplayers)
+                        }
                         0x00 => {
                             let magic = read_varint(&mut rest).expect("malformed packet");
 
                             stream.write_all(&chat("KeepAlive"));
                             stream.write_all(&keepalive(magic.0, magic.1));
+                        }
+                        0x05 => {
+                            let mut bit = [0; 8];
+                            rest.read_exact(&mut bit)
+                                .expect("Could not read Position Packet");
+                            let mut val = u64::from_be_bytes(bit);
+                            let pos = Location::from_long(val);
+
+                            println!(
+                                "Spawnposition: X: {:?}, Y: {:?}, Z: {:?}",
+                                pos.x, pos.y, pos.z
+                            );
                         }
                         _ => (),
                     }
