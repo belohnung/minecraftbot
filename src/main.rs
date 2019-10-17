@@ -1,5 +1,5 @@
 use crate::game::{ConnectionState, Entity};
-use crate::packets::{player, pos};
+use crate::packets::{chat, player, pos};
 use crate::protocol::Packet;
 use mc_varint::{VarIntRead, VarIntWrite};
 use serde_json::json;
@@ -7,7 +7,10 @@ use std::collections::LinkedList;
 use std::io::Result;
 use std::io::{Cursor, Read, Write};
 use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    mpsc::{self, Receiver, Sender},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::Duration;
 
@@ -16,7 +19,7 @@ mod packets;
 mod protocol;
 
 fn main() {
-    bot("Nogga".parse().unwrap());
+    bot("Fortz".parse().unwrap());
 }
 
 fn bot(name: String) {
@@ -34,25 +37,33 @@ fn bot(name: String) {
     };
     match TcpStream::connect(format!("{}:{}", ipadress, port)) {
         Ok(mut stream) => {
-            let stream = Arc::new(Mutex::new(stream));
+            let (outbound_sender, outbound_receiver) = mpsc::channel::<Vec<u8>>();
+            let (inbound_sender, inbound_receiver) = mpsc::channel::<Vec<u8>>();
+
             let entity = Arc::new(Mutex::new(entity));
             {
-                let stream2 = stream.clone();
-                let entity2 = entity.clone();
-                thread::spawn(move || loop {
-                    thread::sleep(Duration::from_millis(50));
-                    let lockedentity = entity2.lock().unwrap();
-                    Packet::ClientPlayerPositionAndLook {
-                        x: lockedentity.x,
-                        y: lockedentity.y,
-                        z: lockedentity.z,
-                        yaw: lockedentity.yaw,
-                        pitch: lockedentity.pitch,
-                        onground: false,
+                thread::spawn({
+                    let entity = entity.clone();
+
+                    move || loop {
+                        thread::sleep(Duration::from_millis(50));
+                        let mut buf = Vec::new();
+                        {
+                            let lockedentity = entity.lock().unwrap();
+                            Packet::ClientPlayerPositionAndLook {
+                                x: lockedentity.x,
+                                y: lockedentity.y,
+                                z: lockedentity.z,
+                                yaw: lockedentity.yaw,
+                                pitch: lockedentity.pitch,
+                                onground: false,
+                            }
+                            .serialize(&mut buf)
+                            .unwrap();
+                        }
+                        sender.send(buf);
+                        //   println!("tick !");
                     }
-                    .serialize(&mut *stream2.lock().unwrap())
-                    .unwrap();
-                    println!("tick !");
                 });
             }
 
@@ -62,15 +73,18 @@ fn bot(name: String) {
                 host_address: ipadress.to_string(),
                 port,
             }
-            .serialize(&mut *stream.lock().unwrap());
+            .serialize(&mut stream);
             Packet::ClientJoin {
                 player_name: name.to_string(),
             }
-            .serialize(&mut *stream.lock().unwrap());
+            .serialize(&mut stream);
 
             'outer: loop {
-                let received_packet = match Packet::deserialize(&mut *stream.lock().unwrap(), state)
-                {
+                for packet in receiver.try_iter() {
+                    // println!("sent packet");
+                    stream.write_all(&packet);
+                }
+                let received_packet = match Packet::deserialize(&mut stream, state) {
                     Ok(p) => p,
                     Err(e) => {
                         //eprintln!("error: {}", e);
@@ -85,11 +99,10 @@ fn bot(name: String) {
                     }
                     Packet::ServerKeepAlive { magic: moom } => {
                         Packet::ClientKeepAlive { magic: moom }
-                            .serialize(&mut *stream.lock().unwrap())
+                            .serialize(&mut stream)
                             .unwrap();
-                        let mut locked = entity.lock().unwrap();
-                        locked.z += 1.0;
-                        locked.x += 1.0;
+
+                        //stream.write(&chat("Koop Eliv"));
                     }
                     Packet::ServerPlayerPositionAndLook {
                         x,
