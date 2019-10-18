@@ -1,12 +1,13 @@
 use crate::game::{ConnectionState, Entity};
 use crate::packets::{chat, player, pos};
-use crate::protocol::Packet;
+use crate::protocol::{Packet, PacketError};
 use mc_varint::{VarIntRead, VarIntWrite};
 use serde_json::json;
 use std::collections::LinkedList;
-use std::io::Result;
 use std::io::{Cursor, Read, Write};
+use std::io::{ErrorKind, Result};
 use std::net::TcpStream;
+use std::sync::mpsc::TryRecvError;
 use std::sync::{
     mpsc::{self, Receiver, Sender},
     Arc, Mutex,
@@ -38,7 +39,7 @@ fn bot(name: String) {
     match TcpStream::connect(format!("{}:{}", ipadress, port)) {
         Ok(mut stream) => {
             let (outbound_sender, outbound_receiver) = mpsc::channel::<Vec<u8>>();
-            let (inbound_sender, inbound_receiver) = mpsc::channel::<Vec<u8>>();
+            let (inbound_sender, inbound_receiver) = mpsc::channel::<Packet>();
 
             let entity = Arc::new(Mutex::new(entity));
             {
@@ -61,8 +62,35 @@ fn bot(name: String) {
                             .serialize(&mut buf)
                             .unwrap();
                         }
-                        sender.send(buf);
+                        outbound_sender.send(buf);
                         //   println!("tick !");
+                    }
+                });
+                thread::spawn({
+                    || loop {
+                        let mut vic = Vec::new();
+                        match stream.read_exact(&mut vic) {
+                            Ok(_) => {
+                                let received_packet =
+                                    match Packet::deserialize(&mut vic.as_slice(), state) {
+                                        Ok(p) => p,
+                                        Err(_) => (unimplemented!()),
+                                    };
+                                inbound_sender.send(received_packet);
+                            }
+                            Err(ref err) if err.kind() == ErrorKind::WouldBlock => (),
+                            Err(_) => {
+                                println!("connection with server was severed");
+                                break;
+                            }
+                        }
+                        match outbound_receiver.try_recv() {
+                            Ok(msg) => {
+                                stream.write(&mut *msg);
+                            }
+                            Err(TryRecvError::Empty) => (),
+                            Err(TryRecvError::Disconnected) => break,
+                        }
                     }
                 });
             }
@@ -80,19 +108,7 @@ fn bot(name: String) {
             .serialize(&mut stream);
 
             'outer: loop {
-                for packet in receiver.try_iter() {
-                    // println!("sent packet");
-                    stream.write_all(&packet);
-                }
-                let received_packet = match Packet::deserialize(&mut stream, state) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        //eprintln!("error: {}", e);
-                        continue 'outer;
-                    }
-                };
-
-                match received_packet {
+                match inbound_receiver.try_recv().unwrap() {
                     Packet::ServerLoginSuccess { name, uuid } => {
                         println!("Eingeloggt als {} mit der UUID: {:?}", name, uuid);
                         state = ConnectionState::Play;
@@ -123,6 +139,8 @@ fn bot(name: String) {
                     p => println!("packet lol xd: {:#?}", p),
                 }
             }
+
+            loop {}
         }
         _ => {}
     }
