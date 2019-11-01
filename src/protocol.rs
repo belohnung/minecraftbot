@@ -6,6 +6,7 @@ use mc_varint::{VarIntRead, VarIntWrite};
 use std::borrow::BorrowMut;
 use std::io::{Cursor, Error, Read, Result as IOResult, Write};
 use std::result::Result;
+use compress::zlib;
 
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug)]
@@ -223,7 +224,16 @@ impl Packet {
                     .read_var_i32()
                     .map_err(|e| PacketError::DeserializeIOError(e))?;
                 if datalength > 0 {
-                    println!("oops");
+                  if datalength < compression_level {
+                      panic!("Badly Compressed Packet Under Threshold")
+                  }
+                    if datalength > 2097152 {
+                        panic!("Badly Compressed Packet he biggo")
+                    }
+                    println!("Decompressed");
+                    let mut decompressed = vec![0u8; datalength as usize];
+                    zlib::Decoder::new(packet_cursor).read_to_end(&mut decompressed);
+                    packet_data_cursor = Cursor::new(decompressed);
                 } else {
                     packet_type_id = packet_cursor
                         .read_var_i32()
@@ -246,14 +256,14 @@ impl Packet {
         }
         //println!("len: {:?}  data: {:X?}", packet_len, packet_data.clone());
 
-        println!(
-            "typeid: 0x{:02X} len: {:?}  data: {:02X?} CompressionStatus: {:?} PlayState: {:?}",
+       println!(
+            "typeid: 0x{:02X} len: {:?}  CompressionStatus: {:?} PlayState: {:?}",
             packet_type_id,
             packet_len,
-            packet_data_cursor,
             &connection.compression,
             &connection.state
         );
+
         match connection.state {
             ConnectionState::Login => match packet_type_id {
                 0x02 => {
