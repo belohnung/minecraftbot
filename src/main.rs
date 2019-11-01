@@ -20,7 +20,7 @@ mod protocol;
 extern crate approx;
 
 fn main() {
-    bot("Frttz".parse().unwrap());
+    bot("wtf".parse().unwrap());
 }
 
 fn bot(name: String) {
@@ -49,7 +49,8 @@ fn bot(name: String) {
                     let state = state.clone();
                     let barrier = barrier.clone();
                     move || loop {
-                        barrier.wait();
+                        let connection_state = { *state.read().unwrap() };
+                        //  barrier.wait();
                         match outbound_receiver.try_recv() {
                             Ok(mut msg) => {
                                 println!("-> {:X?}", msg);
@@ -60,18 +61,17 @@ fn bot(name: String) {
                         }
 
                         //  dbg!(&*state.read().unwrap());
-
+                        thread::sleep(Duration::from_millis(50));
                         //  println!("NIGGI_______________________________________");
-                        {
-                            match Packet::deserialize(&mut stream, &*state.read().unwrap()) {
-                                Ok(received_packet) => {
-                                    println!(" <- {:X?}", received_packet);
-                                    inbound_sender.send(received_packet);
-                                }
-                                //Err(PacketError::SockySockyNoBlocky) => (),
-                                Err(err) => (),
-                                _ => (),
+                        match Packet::deserialize(&mut stream, &connection_state) {
+                            Ok(received_packet) => {
+                                println!(" <- {:X?}", received_packet);
+
+                                inbound_sender.send(received_packet);
                             }
+                            //Err(PacketError::SockySockyNoBlocky) => (),
+                            Err(err) => (),
+                            _ => (),
                         }
 
                         //   println!("NIGGI______________OLILI_________________________")
@@ -96,6 +96,8 @@ fn bot(name: String) {
 
                 move || loop {
                     {
+                        thread::sleep(Duration::from_millis(20));
+                        //   barrier.wait();
                         let lockedentity = entity.lock().unwrap();
                         let mut serverentity = Entity {
                             entityid: 0,
@@ -105,11 +107,10 @@ fn bot(name: String) {
                             yaw: 0.0,
                             pitch: 0.0,
                         };
-                        thread::sleep(Duration::from_millis(20));
 
                         match *state.read().unwrap() {
                             ConnectionState::Play => {
-                                if !compareLoc(&lockedentity, &serverentity) {
+                                /*  if !compareLoc(&lockedentity, &serverentity) {
                                     outbound_sender.send(Packet::ClientPlayerPositionAndLook {
                                         x: lockedentity.x,
                                         y: lockedentity.y,
@@ -120,6 +121,8 @@ fn bot(name: String) {
                                     });
                                     serverentity = **&lockedentity;
                                 }
+                                */
+                                ()
                             }
 
                             _ => {}
@@ -131,8 +134,8 @@ fn bot(name: String) {
             });
             'outer: loop {
                 if let Ok(packet) = inbound_receiver.try_recv() {
-                    let statetmp = { &*state.read().unwrap() };
-                    match statetmp {
+                    let connection_state = { *state.read().unwrap() };
+                    match connection_state {
                         ConnectionState::Play => {
                             match packet {
                                 Packet::ServerKeepAlive { magic: moom } => {
@@ -153,14 +156,14 @@ fn bot(name: String) {
                                     pitch,
                                     flags,
                                 } => {
-                                    println!("g0y");
+                                    println!("packet position bekommen");
                                     let mut lockedentity = entity.lock().unwrap();
                                     lockedentity.x = x;
                                     lockedentity.y = y;
                                     lockedentity.z = z;
                                     lockedentity.yaw = yaw;
                                     lockedentity.pitch = pitch;
-                                    println!("gay");
+                                    println!("eigene position angepasst bro");
                                 }
                                 p => println!("packet lol xd: {:#?}", p),
                             }
