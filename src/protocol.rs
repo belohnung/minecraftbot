@@ -1,4 +1,5 @@
-use crate::game::ConnectionState;
+use crate::game::CompressionStatus::Enabled;
+use crate::game::{CompressionStatus, ConnectionState, MinecraftConnection};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use err_derive::Error;
 use mc_varint::{VarIntRead, VarIntWrite};
@@ -157,7 +158,9 @@ pub enum Packet {
     },
     ///////// S -> C (clientbound)
     // Login state
-    ServerCompressionLevelSet {},
+    ServerCompressionLevelSet {
+        compression_level: i32,
+    },
     ServerLoginSuccess {
         uuid: String,
         name: String,
@@ -198,28 +201,60 @@ pub enum Packet {
 
 impl Packet {
     /// Takes a received packet from the server and decodes it into a Packet
-    pub fn deserialize<R>(buf: &mut R, state: &ConnectionState) -> Result<Packet, PacketError>
+    pub fn deserialize<R>(
+        buf: &mut R,
+        connection: &MinecraftConnection,
+    ) -> Result<Packet, PacketError>
     where
         R: Read,
     {
         let packet_len = buf
             .read_var_i32()
             .map_err(|e| PacketError::DeserializeIOError(e))?;
-        let mut packet_data = vec![0u8; packet_len as usize];
-        buf.read_exact(&mut packet_data)
+        let mut packet = vec![0u8; packet_len as usize];
+        buf.read_exact(&mut packet)
             .map_err(|e| PacketError::DeserializeIOError(e))?;
-        let mut packet_data_cursor = Cursor::new(packet_data.clone());
-
+        let mut packet_cursor = Cursor::new(packet.clone());
+        let mut packet_type_id = 0;
+        let mut packet_data_cursor = Cursor::new(packet.clone());
+        match connection.compression {
+            CompressionStatus::Enabled(compression_level) => {
+                let datalength = packet_cursor
+                    .read_var_i32()
+                    .map_err(|e| PacketError::DeserializeIOError(e))?;
+                if datalength > 0 {
+                    println!("oops");
+                } else {
+                    packet_type_id = packet_cursor
+                        .read_var_i32()
+                        .map_err(|e| PacketError::DeserializeIOError(e))?;
+                    packet_data_cursor = Cursor::new(
+                        packet
+                            .as_slice()
+                            .split_at(packet_cursor.position() as usize)
+                            .1
+                            .to_vec(),
+                    );
+                }
+            }
+            CompressionStatus::None => {
+                packet_type_id = packet_cursor
+                    .read_var_i32()
+                    .map_err(|e| PacketError::DeserializeIOError(e))?;
+                packet_data_cursor.set_position(packet_cursor.position());
+            }
+        }
         //println!("len: {:?}  data: {:X?}", packet_len, packet_data.clone());
-        let packet_type_id = packet_data_cursor
-            .read_var_i32()
-            .map_err(|e| PacketError::DeserializeIOError(e))?;
 
         println!(
-            "typeid: 0x{:02X} len: {:?}  data: {:02X?}",
-            packet_type_id, packet_len, packet_data
+            "typeid: 0x{:02X} len: {:?}  data: {:02X?} CompressionStatus: {:?} PlayState: {:?}",
+            packet_type_id,
+            packet_len,
+            packet_data_cursor,
+            &connection.compression,
+            &connection.state
         );
-        match state {
+        match connection.state {
             ConnectionState::Login => match packet_type_id {
                 0x02 => {
                     let packet_fields = read_values_from_template(
@@ -237,6 +272,22 @@ impl Packet {
                         })
                     } else {
                         Err(PacketError::MalformedPacket("join packet romped"))
+                    }
+                }
+
+                0x03 => {
+                    let packet_fields = read_values_from_template(
+                        &mut packet_data_cursor,
+                        &[RawPacketValueType::varint],
+                    )
+                    .map_err(|io_err| PacketError::DeserializeIOError(io_err))?;
+
+                    if let [RawPacketValue::varint(compression_level)] = packet_fields.as_slice() {
+                        Ok(Packet::ServerCompressionLevelSet {
+                            compression_level: *compression_level,
+                        })
+                    } else {
+                        Err(PacketError::MalformedPacket("compression packet romped"))
                     }
                 }
 
@@ -478,14 +529,14 @@ pub fn read_values_from_template(
         out.push(ty.from_buf(buf)?);
         // println!("reading data {:X?}", &*buf);
     }
-    /*
+
     assert_eq!(
         buf.get_ref().len(),
         buf.position() as usize,
         "packet malformed (or packet template ({:?})) ",
         template
     );
-    */
+
     Ok(out)
 }
 

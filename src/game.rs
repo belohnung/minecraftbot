@@ -8,11 +8,18 @@ pub enum ConnectionState {
     Play,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum CompressionStatus {
+    None,
+    Enabled(i32),
+}
+#[derive(Debug)]
 pub struct MinecraftConnection {
-    server_address: SocketAddrV4,
-    socket: Option<TcpStream>,
-    player_name: String,
-    state: ConnectionState,
+    pub server_address: SocketAddrV4,
+    pub socket: Option<TcpStream>,
+    pub player_name: String,
+    pub state: ConnectionState,
+    pub compression: CompressionStatus,
 }
 
 impl MinecraftConnection {
@@ -21,7 +28,8 @@ impl MinecraftConnection {
             server_address,
             socket: None,
             player_name,
-            state: ConnectionState::None,
+            state: ConnectionState::Login,
+            compression: CompressionStatus::None,
         }
     }
 

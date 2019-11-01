@@ -1,4 +1,4 @@
-use crate::game::{ConnectionState, Entity};
+use crate::game::{CompressionStatus, ConnectionState, Entity, MinecraftConnection};
 use crate::packets::{chat, player, pos};
 use crate::protocol::{Packet, PacketError};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
@@ -7,7 +7,7 @@ use serde_json::json;
 use std::collections::LinkedList;
 use std::io::{Cursor, Read, Write};
 use std::io::{ErrorKind, Result};
-use std::net::TcpStream;
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Barrier, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -27,7 +27,10 @@ fn bot(name: String) {
     //  let mut loggedin = false;
     let ipadress = "5.181.151.65";
     let port = 25565;
-    let mut state = Arc::new(RwLock::new(ConnectionState::Login));
+    let mut connection = Arc::new(RwLock::new(MinecraftConnection::new(
+        format!("{}:{}", ipadress, port).parse().unwrap(),
+        "gay".parse().unwrap(),
+    )));
     let mut entity = Entity {
         entityid: 0,
         x: 0.0,
@@ -46,35 +49,40 @@ fn bot(name: String) {
             let entity = Arc::new(Mutex::new(entity));
             {
                 thread::spawn({
-                    let state = state.clone();
+                    let connection = connection.clone();
                     let barrier = barrier.clone();
                     move || loop {
-                        let connection_state = { *state.read().unwrap() };
-                        //  barrier.wait();
-                        match outbound_receiver.try_recv() {
-                            Ok(mut msg) => {
-                                println!("-> {:X?}", msg);
-                                stream.write_all(&msg.serialize().unwrap());
-                            }
-                            Err(TryRecvError::Empty) => (),
-                            Err(TryRecvError::Disconnected) => break,
-                        }
+                        thread::sleep(Duration::from_millis(20));
+                        let mut connection_state = { connection.write().unwrap() };
 
-                        //  dbg!(&*state.read().unwrap());
-                        thread::sleep(Duration::from_millis(50));
-                        //  println!("NIGGI_______________________________________");
                         match Packet::deserialize(&mut stream, &connection_state) {
-                            Ok(received_packet) => {
-                                println!(" <- {:X?}", received_packet);
-
-                                inbound_sender.send(received_packet);
-                            }
+                            Ok(received_packet) => match received_packet {
+                                Packet::ServerCompressionLevelSet { compression_level } => {
+                                    connection_state.compression =
+                                        CompressionStatus::Enabled(compression_level);
+                                    println!("Compression threshold set to {}", compression_level);
+                                }
+                                p => {
+                                    inbound_sender.send(p.clone());
+                                    println!(" <- {:02X?}", p);
+                                }
+                            },
                             //Err(PacketError::SockySockyNoBlocky) => (),
                             Err(err) => (),
                             _ => (),
                         }
-
-                        //   println!("NIGGI______________OLILI_________________________")
+                        match outbound_receiver.try_recv() {
+                            Ok(mut msg) => {
+                                println!("-> {:X?}", msg);
+                                match msg {
+                                    p => {
+                                        stream.write_all(&p.serialize().unwrap());
+                                    }
+                                }
+                            }
+                            Err(TryRecvError::Empty) => (),
+                            Err(TryRecvError::Disconnected) => break,
+                        }
                     }
                 });
             }
@@ -92,12 +100,13 @@ fn bot(name: String) {
             thread::spawn({
                 let entity = entity.clone();
                 let outbound_sender = outbound_sender.clone();
-                let state = state.clone();
+                let connection = connection.clone();
 
                 move || loop {
                     {
                         thread::sleep(Duration::from_millis(20));
                         //   barrier.wait();
+                        let state = connection.read().unwrap().state;
                         let lockedentity = entity.lock().unwrap();
                         let mut serverentity = Entity {
                             entityid: 0,
@@ -108,7 +117,7 @@ fn bot(name: String) {
                             pitch: 0.0,
                         };
 
-                        match *state.read().unwrap() {
+                        match state {
                             ConnectionState::Play => {
                                 /*  if !compareLoc(&lockedentity, &serverentity) {
                                     outbound_sender.send(Packet::ClientPlayerPositionAndLook {
@@ -134,7 +143,7 @@ fn bot(name: String) {
             });
             'outer: loop {
                 if let Ok(packet) = inbound_receiver.try_recv() {
-                    let connection_state = { *state.read().unwrap() };
+                    let connection_state = { connection.read().unwrap().state };
                     match connection_state {
                         ConnectionState::Play => {
                             match packet {
@@ -147,6 +156,11 @@ fn bot(name: String) {
                                     // entity.lock().unwrap().pitch += 1.0;
                                     //  outbound_sender.send(chat("Koop Eliv"));
                                 }
+
+                                Packet::ServerChatPacket {
+                                    message: msg,
+                                    position: displayposition,
+                                } => println!("[{}][CHAT] {:?}", displayposition, msg),
 
                                 Packet::ServerPlayerPositionAndLook {
                                     x,
@@ -170,13 +184,10 @@ fn bot(name: String) {
                         }
                         ConnectionState::Login => match packet {
                             Packet::ServerLoginSuccess { name, uuid } => {
-                                println!("Eingeloggt als {} mit der UUID: {:?}", name, uuid);
-
-                                *state.write().expect("gay") = ConnectionState::Play;
-                                println!("uwwu");
-
-                                println!("uwu");
+                                connection.write().unwrap().state = ConnectionState::Play;
+                                println!("Logged in as {} with UUID: {:?}", name, uuid);
                             }
+
                             p => {
                                 dbg!(p);
                             }
