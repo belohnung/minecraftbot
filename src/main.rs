@@ -1,5 +1,6 @@
 use crate::game::{CompressionStatus, ConnectionState, Entity, MinecraftConnection};
 use crate::packets::{chat, player, pos};
+use crate::protocol::PacketError::{DeserializeIOError, UnknownPacketIdentifier};
 use crate::protocol::{Packet, PacketError};
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use mc_varint::{VarIntRead, VarIntWrite};
@@ -53,25 +54,9 @@ fn bot(name: String) {
                     let connection = connection.clone();
                     let barrier = barrier.clone();
                     move || loop {
-                        thread::sleep(Duration::from_millis(20));
+                        //
+                        thread::sleep(Duration::from_millis(3));
                         let mut connection_state = { connection.write().unwrap() };
-
-                        match Packet::deserialize(&mut stream, &connection_state) {
-                            Ok(received_packet) => match received_packet {
-                                Packet::ServerCompressionLevelSet { compression_level } => {
-                                    connection_state.compression =
-                                        CompressionStatus::Enabled(compression_level);
-                                    println!("Compression threshold set to {}", compression_level);
-                                }
-                                p => {
-                                    inbound_sender.send(p.clone());
-                                    //   println!(" <- {:02X?}", p);
-                                }
-                            },
-                            //Err(PacketError::SockySockyNoBlocky) => (),
-                            Err(err) => (),
-                            _ => (),
-                        }
                         match outbound_receiver.try_recv() {
                             Ok(mut msg) => {
                                 println!("-> {:X?}", msg);
@@ -84,6 +69,34 @@ fn bot(name: String) {
                             Err(TryRecvError::Empty) => (),
                             Err(TryRecvError::Disconnected) => break,
                         }
+                        thread::sleep(Duration::from_millis(2));
+                        match Packet::deserialize(&mut stream, &connection_state) {
+                            Ok(received_packet) => match received_packet {
+                                Packet::ServerCompressionLevelSet { compression_level } => {
+                                    connection_state.compression =
+                                        CompressionStatus::Enabled(compression_level);
+                                    println!("Compression threshold set to {}", compression_level);
+                                }
+                                p => {
+                                    inbound_sender
+                                        .send_timeout(p.clone(), Duration::from_millis(1));
+                                    //   println!(" <- {:02X?}", p);
+                                }
+                            },
+                            Err(PacketError::SockySockyNoBlocky) => (),
+                            Err(DeserializeIOError(err)) => {
+                                //dbg!(err);
+                            }
+                            Err(PacketError::UnknownPacketIdentifier { id }) => {
+                                //dbg!(err);
+                            }
+                            Err(err) => {
+                                dbg!(err);
+                            }
+                            _ => (),
+                        }
+
+                        barrier.wait();
                     }
                 });
             }
@@ -102,6 +115,14 @@ fn bot(name: String) {
                 let entity = entity.clone();
                 let outbound_sender = outbound_sender.clone();
                 let connection = connection.clone();
+                let mut serverentity = Entity {
+                    entityid: 0,
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.0,
+                    yaw: 0.0,
+                    pitch: 0.0,
+                };
 
                 move || loop {
                     {
@@ -109,18 +130,10 @@ fn bot(name: String) {
                         //   barrier.wait();
                         let state = connection.read().unwrap().state;
                         let lockedentity = entity.lock().unwrap();
-                        let mut serverentity = Entity {
-                            entityid: 0,
-                            x: 0.0,
-                            y: 0.0,
-                            z: 0.0,
-                            yaw: 0.0,
-                            pitch: 0.0,
-                        };
 
                         match state {
                             ConnectionState::Play => {
-                                /*  if !compareLoc(&lockedentity, &serverentity) {
+                                if !compareLoc(&lockedentity, &serverentity) {
                                     outbound_sender.send(Packet::ClientPlayerPositionAndLook {
                                         x: lockedentity.x,
                                         y: lockedentity.y,
@@ -131,7 +144,7 @@ fn bot(name: String) {
                                     });
                                     serverentity = **&lockedentity;
                                 }
-                                */
+
                                 ()
                             }
 
@@ -143,14 +156,13 @@ fn bot(name: String) {
                 }
             });
             'outer: loop {
-                if let Ok(packet) = inbound_receiver.try_recv() {
+                barrier.wait();
+                if let Ok(packet) = inbound_receiver.recv_timeout(Duration::from_millis(1)) {
                     let connection_state = { connection.read().unwrap().state };
                     match connection_state {
                         ConnectionState::Play => {
                             match packet {
                                 Packet::ServerKeepAlive { magic: moom } => {
-                                    println!("Keeeeep {}", moom);
-
                                     outbound_sender.send(Packet::ClientKeepAlive { magic: moom });
 
                                     // entity.lock().unwrap().z += 1.0;
@@ -161,7 +173,10 @@ fn bot(name: String) {
                                 Packet::ServerChatPacket {
                                     message: msg,
                                     position: displayposition,
-                                } => println!("[{}][CHAT] {:?}", displayposition, msg),
+                                } => {
+                                    entity.lock().unwrap().z += 1.0;
+                                    dbg!(msg);
+                                }
 
                                 Packet::ServerPlayerPositionAndLook {
                                     x,
@@ -180,7 +195,7 @@ fn bot(name: String) {
                                     lockedentity.pitch = pitch;
                                     println!("eigene position angepasst bro");
                                 }
-                                p => println!("packet lol xd: {:#?}", p),
+                                p => (),
                             }
                         }
                         ConnectionState::Login => match packet {

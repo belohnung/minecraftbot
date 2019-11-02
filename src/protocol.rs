@@ -570,7 +570,6 @@ where
     if let Enabled(threshold) = compression_state {
         extra = 1;
         if temp_buf.len() as i32 > *threshold {
-            println!("COMPRESSED");
             let uncompressed_size = temp_buf.len();
             let mut new = Vec::new();
             new.write_var_i32(uncompressed_size as i32);
@@ -582,7 +581,6 @@ where
     buf.write_var_i32(temp_buf.len() as i32 + extra)?; // schreibt als ERSTES in den buffer
     if let Enabled(threshold) = compression_state {
         if *threshold > temp_buf.len() as i32 {
-            println!("ZERO");
             buf.write_var_i32(0 as i32)?; // Wenn compression dann anderes packetspec und weil hier an ist aber das packet zu klein ist eine 0
         }
     }
