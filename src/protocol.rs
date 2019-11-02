@@ -218,53 +218,34 @@ impl Packet {
         buf.read_exact(&mut packet)
             .map_err(|e| PacketError::DeserializeIOError(e))?;
         let mut packet_cursor = Cursor::new(packet.clone());
-        let mut packet_type_id = 0;
         let mut packet_data_cursor = Cursor::new(packet.clone());
-        match connection.compression {
-            CompressionStatus::Enabled(compression_level) => {
-                let uncompressed_size = packet_cursor
-                    .read_var_i32()
-                    .map_err(|e| PacketError::DeserializeIOError(e))?;
-                if uncompressed_size != 0 {
-                    let mut new = Vec::with_capacity(uncompressed_size as usize);
-                    {
-                        let mut reader = ZlibDecoder::new(buf);
-                        reader.read_to_end(&mut new);
-                    }
-                    packet_data_cursor = io::Cursor::new(new);
-                } else {
-                    packet_type_id = packet_cursor
-                        .read_var_i32()
-                        .map_err(|e| PacketError::DeserializeIOError(e))?;
-                    packet_data_cursor = Cursor::new(
-                        packet
-                            .as_slice()
-                            .split_at(packet_cursor.position() as usize)
-                            .1
-                            .to_vec(),
-                    );
+
+        if let Enabled(compression_level) = connection.compression {
+            let uncompressed_size = packet_cursor
+                .read_var_i32()
+                .map_err(|e| PacketError::DeserializeIOError(e))?;
+            if uncompressed_size != 0 {
+                let mut new = Vec::with_capacity(uncompressed_size as usize);
+                {
+                    let mut reader = ZlibDecoder::new(packet_cursor);
+                    reader.read_to_end(&mut new).unwrap();
                 }
-            }
-            CompressionStatus::None => {
-                packet_type_id = packet_cursor
-                    .read_var_i32()
-                    .map_err(|e| PacketError::DeserializeIOError(e))?;
-                packet_data_cursor.set_position(packet_cursor.position());
+
+                packet_data_cursor = io::Cursor::new(new);
             }
         }
+        let type_id = packet_data_cursor
+            .read_var_i32()
+            .map_err(|e| PacketError::DeserializeIOError(e))?;
         //println!("len: {:?}  data: {:X?}", packet_len, packet_data.clone());
 
         println!(
             "typeid: 0x{:02X} len: {:?}  CompressionStatus: {:?} PlayState: {:?} \n data: {:?}",
-            packet_type_id,
-            packet_len,
-            &connection.compression,
-            &connection.state,
-            packet_data_cursor
+            type_id, packet_len, &connection.compression, &connection.state, packet_data_cursor
         );
 
         match connection.state {
-            ConnectionState::Login => match packet_type_id {
+            ConnectionState::Login => match type_id {
                 0x02 => {
                     let packet_fields = read_values_from_template(
                         &mut packet_data_cursor,
@@ -302,7 +283,7 @@ impl Packet {
 
                 id => Err(PacketError::UnknownPacketIdentifier { id }),
             },
-            ConnectionState::Play => match packet_type_id {
+            ConnectionState::Play => match type_id {
                 0x00 => {
                     let packet_fields = read_values_from_template(
                         &mut packet_data_cursor,
