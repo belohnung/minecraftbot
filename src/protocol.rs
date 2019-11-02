@@ -1,12 +1,14 @@
+use crate::compression::*;
 use crate::game::CompressionStatus::Enabled;
 use crate::game::{CompressionStatus, ConnectionState, MinecraftConnection};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use err_derive::Error;
+use flate2::read::ZlibDecoder;
 use mc_varint::{VarIntRead, VarIntWrite};
 use std::borrow::BorrowMut;
+use std::io;
 use std::io::{Cursor, Error, Read, Result as IOResult, Write};
 use std::result::Result;
-use compress::zlib;
 
 #[allow(non_camel_case_types)]
 #[derive(Copy, Clone, Debug)]
@@ -220,20 +222,16 @@ impl Packet {
         let mut packet_data_cursor = Cursor::new(packet.clone());
         match connection.compression {
             CompressionStatus::Enabled(compression_level) => {
-                let datalength = packet_cursor
+                let uncompressed_size = packet_cursor
                     .read_var_i32()
                     .map_err(|e| PacketError::DeserializeIOError(e))?;
-                if datalength > 0 {
-                  if datalength < compression_level {
-                      panic!("Badly Compressed Packet Under Threshold")
-                  }
-                    if datalength > 2097152 {
-                        panic!("Badly Compressed Packet he biggo")
+                if uncompressed_size != 0 {
+                    let mut new = Vec::with_capacity(uncompressed_size as usize);
+                    {
+                        let mut reader = ZlibDecoder::new(buf);
+                        reader.read_to_end(&mut new);
                     }
-                    println!("Decompressed");
-                    let mut decompressed = vec![0u8; datalength as usize];
-                    zlib::Decoder::new(packet_cursor).read_to_end(&mut decompressed);
-                    packet_data_cursor = Cursor::new(decompressed);
+                    packet_data_cursor = io::Cursor::new(new);
                 } else {
                     packet_type_id = packet_cursor
                         .read_var_i32()
@@ -256,12 +254,13 @@ impl Packet {
         }
         //println!("len: {:?}  data: {:X?}", packet_len, packet_data.clone());
 
-       println!(
-            "typeid: 0x{:02X} len: {:?}  CompressionStatus: {:?} PlayState: {:?}",
+        println!(
+            "typeid: 0x{:02X} len: {:?}  CompressionStatus: {:?} PlayState: {:?} \n data: {:?}",
             packet_type_id,
             packet_len,
             &connection.compression,
-            &connection.state
+            &connection.state,
+            packet_data_cursor
         );
 
         match connection.state {

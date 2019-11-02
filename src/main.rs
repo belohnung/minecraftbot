@@ -12,6 +12,7 @@ use std::sync::{Arc, Barrier, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
+mod compression;
 mod game;
 mod packets;
 mod protocol;
