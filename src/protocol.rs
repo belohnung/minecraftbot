@@ -3,7 +3,8 @@ use crate::game::CompressionStatus::Enabled;
 use crate::game::{CompressionStatus, ConnectionState, MinecraftConnection};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use err_derive::Error;
-use flate2::read::ZlibDecoder;
+use flate2::read::{ZlibDecoder, ZlibEncoder};
+use flate2::Compression;
 use mc_varint::{VarIntRead, VarIntWrite};
 use std::borrow::BorrowMut;
 use std::io;
@@ -232,18 +233,23 @@ impl Packet {
                 }
 
                 packet_data_cursor = io::Cursor::new(new);
+            } else {
+                packet_data_cursor = packet_cursor.clone();
             }
+        } else {
+            packet_data_cursor = packet_cursor.clone();
         }
+
         let type_id = packet_data_cursor
             .read_var_i32()
             .map_err(|e| PacketError::DeserializeIOError(e))?;
         //println!("len: {:?}  data: {:X?}", packet_len, packet_data.clone());
-
-        println!(
-            "typeid: 0x{:02X} len: {:?}  CompressionStatus: {:?} PlayState: {:?} \n data: {:?}",
-            type_id, packet_len, &connection.compression, &connection.state, packet_data_cursor
-        );
-
+        /*
+                println!(
+                    "typeid: 0x{:02X} len: {:?}  CompressionStatus: {:?} PlayState: {:?} \n data: {:?}",
+                    type_id, packet_len, &connection.compression, &connection.state, packet_data_cursor
+                );
+        */
         match connection.state {
             ConnectionState::Login => match type_id {
                 0x02 => {
@@ -419,7 +425,7 @@ impl Packet {
     }
 
     /// Takes the packet and serializes it for the server to receive
-    pub fn serialize(self) -> IOResult<Vec<u8>> {
+    pub fn serialize(self, connection: &MinecraftConnection) -> IOResult<Vec<u8>> {
         let mut buf = Vec::new();
         let my_id = self.packet_type_id();
 
@@ -434,15 +440,26 @@ impl Packet {
                         RawPacketValue::ushort(port),
                         RawPacketValue::varint(2),
                     ],
+                    &connection.compression,
                 )?;
                 buf
             }
             Packet::ClientJoin { player_name } => {
-                write_packet_fields(&mut buf, my_id, &[RawPacketValue::String(player_name)])?;
+                write_packet_fields(
+                    &mut buf,
+                    my_id,
+                    &[RawPacketValue::String(player_name)],
+                    &connection.compression,
+                )?;
                 buf
             }
             Packet::ClientKeepAlive { magic } => {
-                write_packet_fields(&mut buf, my_id, &[RawPacketValue::varint(magic)])?;
+                write_packet_fields(
+                    &mut buf,
+                    my_id,
+                    &[RawPacketValue::varint(magic)],
+                    &connection.compression,
+                )?;
                 buf
             }
             Packet::ClientPlayerPositionAndLook {
@@ -464,6 +481,7 @@ impl Packet {
                         RawPacketValue::float(pitch),
                         RawPacketValue::boolean(onground),
                     ],
+                    &connection.compression,
                 )?;
                 buf
             }
@@ -477,6 +495,7 @@ impl Packet {
                         RawPacketValue::double(z),
                         RawPacketValue::boolean(onground),
                     ],
+                    &connection.compression,
                 )?;
                 buf
             }
@@ -499,6 +518,7 @@ impl Packet {
                         RawPacketValue::float(pitch),
                         RawPacketValue::boolean(onground),
                     ],
+                    &connection.compression,
                 )?;
                 buf
             }
@@ -534,6 +554,7 @@ pub fn write_packet_fields<W>(
     buf: &mut W,
     packet_type_id: i32,
     template: &[RawPacketValue],
+    compression_state: &CompressionStatus,
 ) -> IOResult<()>
 where
     W: Write,
@@ -545,9 +566,27 @@ where
     for ty in template {
         ty.serialize(&mut temp_cursor);
     }
-
-    buf.write_var_i32(temp_buf.len() as i32)?;
-    buf.write_all(&temp_buf)?;
+    let mut extra = 0;
+    if let Enabled(threshold) = compression_state {
+        extra = 1;
+        if temp_buf.len() as i32 > *threshold {
+            println!("COMPRESSED");
+            let uncompressed_size = temp_buf.len();
+            let mut new = Vec::new();
+            new.write_var_i32(uncompressed_size as i32);
+            let mut write = ZlibEncoder::new(io::Cursor::new(temp_buf), Compression::default());
+            write.read_to_end(&mut new)?;
+            temp_buf = new;
+        }
+    }
+    buf.write_var_i32(temp_buf.len() as i32 + extra)?; // schreibt als ERSTES in den buffer
+    if let Enabled(threshold) = compression_state {
+        if *threshold > temp_buf.len() as i32 {
+            println!("ZERO");
+            buf.write_var_i32(0 as i32)?; // Wenn compression dann anderes packetspec und weil hier an ist aber das packet zu klein ist eine 0
+        }
+    }
+    buf.write_all(&temp_buf)?; // hängt den rest dran
 
     Ok(())
 }

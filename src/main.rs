@@ -65,7 +65,7 @@ fn bot(name: String) {
                                 }
                                 p => {
                                     inbound_sender.send(p.clone());
-                                    println!(" <- {:02X?}", p);
+                                    //   println!(" <- {:02X?}", p);
                                 }
                             },
                             //Err(PacketError::SockySockyNoBlocky) => (),
@@ -77,7 +77,7 @@ fn bot(name: String) {
                                 println!("-> {:X?}", msg);
                                 match msg {
                                     p => {
-                                        stream.write_all(&p.serialize().unwrap());
+                                        stream.write_all(&p.serialize(&connection_state).unwrap());
                                     }
                                 }
                             }
