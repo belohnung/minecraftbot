@@ -2,7 +2,7 @@ use crate::game::{CompressionStatus, ConnectionState, Entity, MinecraftConnectio
 use crate::packets::{chat, player, pos};
 use crate::protocol::PacketError::{DeserializeIOError, UnknownPacketIdentifier};
 use crate::protocol::{Packet, PacketError};
-use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
 use mc_varint::{VarIntRead, VarIntWrite};
 use serde_json::json;
 use std::collections::LinkedList;
@@ -22,7 +22,7 @@ mod protocol;
 extern crate approx;
 
 fn main() {
-    bot("wtf".parse().unwrap());
+    bot("indian_techsupport".parse().unwrap());
 }
 
 fn bot(name: String) {
@@ -57,7 +57,7 @@ fn bot(name: String) {
                         //
                         thread::sleep(Duration::from_millis(3));
                         let mut connection_state = { connection.write().unwrap() };
-                        match outbound_receiver.try_recv() {
+                        match outbound_receiver.recv_timeout(Duration::from_millis(1)) {
                             Ok(mut msg) => {
                                 println!("-> {:X?}", msg);
                                 match msg {
@@ -66,8 +66,8 @@ fn bot(name: String) {
                                     }
                                 }
                             }
-                            Err(TryRecvError::Empty) => (),
-                            Err(TryRecvError::Disconnected) => break,
+                            Err(_) => {}
+                            _ => {}
                         }
                         thread::sleep(Duration::from_millis(2));
                         match Packet::deserialize(&mut stream, &connection_state) {
@@ -96,7 +96,7 @@ fn bot(name: String) {
                             _ => (),
                         }
 
-                        barrier.wait();
+                        //  barrier.wait();
                     }
                 });
             }
@@ -156,8 +156,8 @@ fn bot(name: String) {
                 }
             });
             'outer: loop {
-                barrier.wait();
-                if let Ok(packet) = inbound_receiver.recv_timeout(Duration::from_millis(1)) {
+                // barrier.wait();
+                if let Ok(packet) = inbound_receiver.recv() {
                     let connection_state = { connection.read().unwrap().state };
                     match connection_state {
                         ConnectionState::Play => {
