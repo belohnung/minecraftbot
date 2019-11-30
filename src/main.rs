@@ -11,22 +11,25 @@ use std::io::{ErrorKind, Result};
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, TcpStream, ToSocketAddrs};
 use std::sync::{Arc, Barrier, Mutex, RwLock};
 use std::thread;
+use std::thread::sleep;
 use std::time::Duration;
 
 mod compression;
 mod game;
 mod packets;
 mod protocol;
+//mod world;
 
 #[macro_use]
 extern crate approx;
 
 fn main() {
-    bot("indian_techsupport".parse().unwrap());
+    bot("meow".parse().unwrap());
 }
 
 fn bot(name: String) {
     //  let mut loggedin = false;
+
     let ipadress = "5.181.151.65";
     let port = 25565;
     let mut connection = Arc::new(RwLock::new(MinecraftConnection::new(
@@ -41,7 +44,8 @@ fn bot(name: String) {
         yaw: 0.0,
         pitch: 0.0,
     };
-    match TcpStream::connect(format!("{}:{}", ipadress, port)) {
+
+    match TcpStream::connect(format!("{}:{}", "dev.blohnung.de", "25565")) {
         Ok(mut stream) => {
             stream.set_nonblocking(true);
             let barrier = Arc::new(Barrier::new(2));
@@ -54,8 +58,8 @@ fn bot(name: String) {
                     let connection = connection.clone();
                     let barrier = barrier.clone();
                     move || loop {
-                        //
-                        thread::sleep(Duration::from_millis(3));
+                        // barrier.wait();
+
                         let mut connection_state = { connection.write().unwrap() };
                         match outbound_receiver.recv_timeout(Duration::from_millis(1)) {
                             Ok(mut msg) => {
@@ -69,7 +73,7 @@ fn bot(name: String) {
                             Err(_) => {}
                             _ => {}
                         }
-                        thread::sleep(Duration::from_millis(2));
+                        thread::sleep(Duration::from_millis(3));
                         match Packet::deserialize(&mut stream, &connection_state) {
                             Ok(received_packet) => match received_packet {
                                 Packet::ServerCompressionLevelSet { compression_level } => {
@@ -79,7 +83,7 @@ fn bot(name: String) {
                                 }
                                 p => {
                                     inbound_sender
-                                        .send_timeout(p.clone(), Duration::from_millis(1));
+                                        .send_timeout(p.clone(), Duration::from_millis(3));
                                     //   println!(" <- {:02X?}", p);
                                 }
                             },
@@ -95,8 +99,6 @@ fn bot(name: String) {
                             }
                             _ => (),
                         }
-
-                        //  barrier.wait();
                     }
                 });
             }
@@ -112,6 +114,7 @@ fn bot(name: String) {
             });
 
             thread::spawn({
+                let mut enabled = false;
                 let entity = entity.clone();
                 let outbound_sender = outbound_sender.clone();
                 let connection = connection.clone();
@@ -126,29 +129,38 @@ fn bot(name: String) {
 
                 move || loop {
                     {
+                        //  dbg!("kot");
                         thread::sleep(Duration::from_millis(20));
                         //   barrier.wait();
-                        let state = connection.read().unwrap().state;
-                        let lockedentity = entity.lock().unwrap();
+                        //   barrier.wait();
+                        // println!("as");
+                        {
+                            if !enabled {
+                                let state = connection.read().unwrap().state;
 
-                        match state {
-                            ConnectionState::Play => {
+                                match state {
+                                    ConnectionState::Play => {
+                                        enabled = true;
+                                    }
+
+                                    _ => {}
+                                }
+                            } else {
+                                let lockedentity = entity.lock().unwrap();
                                 if !compareLoc(&lockedentity, &serverentity) {
-                                    outbound_sender.send(Packet::ClientPlayerPositionAndLook {
-                                        x: lockedentity.x,
-                                        y: lockedentity.y,
-                                        z: lockedentity.z,
-                                        yaw: lockedentity.yaw,
-                                        pitch: lockedentity.pitch,
-                                        onground: false,
-                                    });
+                                    outbound_sender
+                                        .send(Packet::ClientPlayerPositionAndLook {
+                                            x: lockedentity.x,
+                                            y: lockedentity.y,
+                                            z: lockedentity.z,
+                                            yaw: lockedentity.yaw,
+                                            pitch: lockedentity.pitch,
+                                            onground: false,
+                                        })
+                                        .unwrap();
                                     serverentity = **&lockedentity;
                                 }
-
-                                ()
                             }
-
-                            _ => {}
                         }
                     }
 
@@ -156,6 +168,8 @@ fn bot(name: String) {
                 }
             });
             'outer: loop {
+                //thread::sleep(Duration::from_millis(5));
+                // println!(".");
                 // barrier.wait();
                 if let Ok(packet) = inbound_receiver.recv() {
                     let connection_state = { connection.read().unwrap().state };
@@ -167,15 +181,33 @@ fn bot(name: String) {
 
                                     // entity.lock().unwrap().z += 1.0;
                                     // entity.lock().unwrap().pitch += 1.0;
-                                    //  outbound_sender.send(chat("Koop Eliv"));
+                                    //outbound_sender.send(chat("Koop Eliv"));
                                 }
 
                                 Packet::ServerChatPacket {
                                     message: msg,
                                     position: displayposition,
                                 } => {
-                                    entity.lock().unwrap().z += 1.0;
-                                    dbg!(msg);
+                                    if !msg.contains("!") {
+                                        let message =
+                                            msg.split("\\u003e").nth(1).unwrap_or("> gay");
+                                        dbg!(message);
+                                        let mut bot = entity.lock().unwrap();
+                                        if message.contains("w") {
+                                            bot.z += 1.0;
+                                        }
+                                        if message.contains("a") {
+                                            bot.x += 1.0;
+                                        }
+                                        if message.contains("d") {
+                                            bot.x -= 1.0;
+                                        }
+                                        if message.contains("s") {
+                                            bot.z -= 1.0;
+                                        }
+                                        bot.yaw += 1.0;
+                                        dbg!(msg);
+                                    }
                                 }
 
                                 Packet::ServerPlayerPositionAndLook {
@@ -186,6 +218,9 @@ fn bot(name: String) {
                                     pitch,
                                     flags,
                                 } => {
+                                    outbound_sender.send(Packet::ClientChat {
+                                        message: "!da is ne wand".to_string(),
+                                    });
                                     println!("packet position bekommen");
                                     let mut lockedentity = entity.lock().unwrap();
                                     lockedentity.x = x;
@@ -221,9 +256,9 @@ fn bot(name: String) {
 
 fn compareLoc(entity1: &Entity, entity2: &Entity) -> bool {
     let mut out = false;
-    out = eq(entity1.x, entity2.x, 1.0);
-    out = eq(entity1.y, entity2.y, 1.0);
-    out = eq(entity1.z, entity2.z, 1.0);
+    out = eq(entity1.x, entity2.x, 0.5);
+    out = eq(entity1.y, entity2.y, 0.5);
+    out = eq(entity1.z, entity2.z, 0.5);
     out
 }
 

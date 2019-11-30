@@ -152,6 +152,9 @@ pub enum Packet {
         pitch: f32,
         onground: bool,
     },
+    ClientChat {
+        message: String,
+    },
     ClientPlayerPositionAndLook {
         x: f64,
         y: f64,
@@ -229,7 +232,7 @@ impl Packet {
                 let mut new = Vec::with_capacity(uncompressed_size as usize);
                 {
                     let mut reader = ZlibDecoder::new(packet_cursor);
-                    reader.read_to_end(&mut new).unwrap();
+                    reader.read_to_end(&mut new);
                 }
 
                 packet_data_cursor = io::Cursor::new(new);
@@ -413,6 +416,7 @@ impl Packet {
             Packet::ClientPlayerPosition { .. } => 0x4,
             Packet::ClientPlayerLook { .. } => 0x05,
             Packet::ClientPlayerPositionAndLook { .. } => 0x06,
+            Packet::ClientChat { .. } => 0x01,
 
             Packet::ServerPlayerPositionAndLook { .. } => 0x08,
             Packet::ServerCompressionLevelSet { .. } => 0x03,
@@ -518,6 +522,15 @@ impl Packet {
                         RawPacketValue::float(pitch),
                         RawPacketValue::boolean(onground),
                     ],
+                    &connection.compression,
+                )?;
+                buf
+            }
+            Packet::ClientChat { message } => {
+                write_packet_fields(
+                    &mut buf,
+                    my_id,
+                    &[RawPacketValue::String(message)],
                     &connection.compression,
                 )?;
                 buf
