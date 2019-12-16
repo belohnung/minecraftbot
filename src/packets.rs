@@ -1,6 +1,6 @@
 use mc_varint::{VarIntRead, VarIntWrite};
 
-pub fn chat(message: &str) -> Vec<u8> {
+pub fn echat(message: &str) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::new();
     buf.write_var_i32(message.len() as i32 + 2).unwrap(); // packetlength
     buf.write_var_i32(0x01).unwrap(); // type ??

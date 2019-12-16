@@ -1,5 +1,7 @@
+#[macro_use]
+extern crate approx;
 use crate::game::{CompressionStatus, ConnectionState, Entity, MinecraftConnection};
-use crate::packets::{chat, player, pos};
+use crate::packets::{player, pos};
 use crate::protocol::PacketError::{DeserializeIOError, UnknownPacketIdentifier};
 use crate::protocol::{Packet, PacketError};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TryRecvError};
@@ -14,17 +16,17 @@ use std::thread;
 use std::thread::sleep;
 use std::time::Duration;
 
+#[macro_use]
+mod macros;
 mod compression;
 mod game;
+mod hash;
 mod packets;
 mod protocol;
 //mod world;
 
-#[macro_use]
-extern crate approx;
-
 fn main() {
-    bot("meow".parse().unwrap());
+    bot("owow".parse().unwrap());
 }
 
 fn bot(name: String) {
@@ -73,25 +75,36 @@ fn bot(name: String) {
                             Err(_) => {}
                             _ => {}
                         }
-                        thread::sleep(Duration::from_millis(3));
+                        thread::sleep(Duration::from_millis(1));
                         match Packet::deserialize(&mut stream, &connection_state) {
-                            Ok(received_packet) => match received_packet {
+                            Ok(received_packet) => match received_packet.clone() {
                                 Packet::ServerCompressionLevelSet { compression_level } => {
-                                    connection_state.compression =
-                                        CompressionStatus::Enabled(compression_level);
-                                    println!("Compression threshold set to {}", compression_level);
+                                    if let CompressionStatus::Enabled(i) =
+                                        connection_state.compression
+                                    {
+                                        println!("Compression threshold wants to be set to {} but already was set to {}", compression_level, i);
+                                    } else {
+                                        connection_state.compression =
+                                            CompressionStatus::Enabled(compression_level);
+                                        println!(
+                                            "Compression threshold set to {}",
+                                            compression_level
+                                        );
+                                    }
+                                }
+                                Packet::ServerLoginSuccess { uuid, name } => {
+                                    inbound_sender.send(received_packet);
+                                    // thread::sleep(Duration::from_millis(1));
                                 }
                                 p => {
-                                    inbound_sender
-                                        .send_timeout(p.clone(), Duration::from_millis(3));
-                                    //   println!(" <- {:02X?}", p);
+                                    inbound_sender.send(p.clone());
+                                    println!(" <- {:02X?}", p);
                                 }
                             },
-                            Err(PacketError::SockySockyNoBlocky) => (),
                             Err(DeserializeIOError(err)) => {
                                 //dbg!(err);
                             }
-                            Err(PacketError::UnknownPacketIdentifier { id }) => {
+                            Err(PacketError::UnknownPacketIdentifier { .. }) => {
                                 //dbg!(err);
                             }
                             Err(err) => {
@@ -99,6 +112,8 @@ fn bot(name: String) {
                             }
                             _ => (),
                         }
+
+                        //  println!("etron");
                     }
                 });
             }
@@ -169,81 +184,92 @@ fn bot(name: String) {
             });
             'outer: loop {
                 //thread::sleep(Duration::from_millis(5));
-                // println!(".");
+                //
                 // barrier.wait();
-                if let Ok(packet) = inbound_receiver.recv() {
-                    let connection_state = { connection.read().unwrap().state };
-                    match connection_state {
-                        ConnectionState::Play => {
-                            match packet {
-                                Packet::ServerKeepAlive { magic: moom } => {
-                                    outbound_sender.send(Packet::ClientKeepAlive { magic: moom });
+                if let Ok(packet) = inbound_receiver.try_recv() {
+                    println!(".");
+                    match packet {
+                        Packet::ServerKeepAlive { magic: moom } => {
+                            outbound_sender.send(Packet::ClientKeepAlive { magic: moom });
 
-                                    // entity.lock().unwrap().z += 1.0;
-                                    // entity.lock().unwrap().pitch += 1.0;
-                                    //outbound_sender.send(chat("Koop Eliv"));
-                                }
+                            // entity.lock().unwrap().z += 1.0;
+                            // entity.lock().unwrap().pitch += 1.0;
+                            //outbound_sender.send(chat("Koop Eliv"));
+                        }
 
-                                Packet::ServerChatPacket {
-                                    message: msg,
-                                    position: displayposition,
-                                } => {
-                                    if !msg.contains("!") {
-                                        let message =
-                                            msg.split("\\u003e").nth(1).unwrap_or("> gay");
-                                        dbg!(message);
-                                        let mut bot = entity.lock().unwrap();
-                                        if message.contains("w") {
-                                            bot.z += 1.0;
-                                        }
-                                        if message.contains("a") {
-                                            bot.x += 1.0;
-                                        }
-                                        if message.contains("d") {
-                                            bot.x -= 1.0;
-                                        }
-                                        if message.contains("s") {
-                                            bot.z -= 1.0;
-                                        }
-                                        bot.yaw += 1.0;
-                                        dbg!(msg);
-                                    }
+                        Packet::ServerChatPacket {
+                            message: msg,
+                            position: displayposition,
+                        } => {
+                            let mut gay = msg.as_str();
+                            if !gay.contains("!") {
+                                let message = msg.split("\\u003e").nth(1).unwrap_or("> gay");
+                                dbg!(message);
+                                let mut bot = entity.lock().unwrap();
+                                if message.contains("w") {
+                                    bot.z += 1.0;
                                 }
-
-                                Packet::ServerPlayerPositionAndLook {
-                                    x,
-                                    y,
-                                    z,
-                                    yaw,
-                                    pitch,
-                                    flags,
-                                } => {
-                                    outbound_sender.send(Packet::ClientChat {
-                                        message: "!da is ne wand".to_string(),
-                                    });
-                                    println!("packet position bekommen");
-                                    let mut lockedentity = entity.lock().unwrap();
-                                    lockedentity.x = x;
-                                    lockedentity.y = y;
-                                    lockedentity.z = z;
-                                    lockedentity.yaw = yaw;
-                                    lockedentity.pitch = pitch;
-                                    println!("eigene position angepasst bro");
+                                if message.contains("a") {
+                                    bot.x += 1.0;
                                 }
-                                p => (),
+                                if message.contains("d") {
+                                    bot.x -= 1.0;
+                                }
+                                if message.contains("s") {
+                                    bot.z -= 1.0;
+                                }
+                                bot.yaw += 10.0;
+                                //  bot.pitch = -90.0;
+                                dbg!(&msg);
+                            }
+                            if gay.contains("#") {
+                                let mut bot = entity.lock().unwrap();
+                                let message: Vec<&str> = gay
+                                    .split("\\u003e")
+                                    .nth(1)
+                                    .unwrap_or("\"]")
+                                    .split("\"")
+                                    .nth(0)
+                                    .unwrap()
+                                    .split("\"")
+                                    .collect();
+                                let command = message[0];
+                                dbg!(message);
+                                if command.contains("setslot") {
+                                    outbound_sender.send(Packet::ClientHeldItemChange { slot: 5 });
+                                }
                             }
                         }
-                        ConnectionState::Login => match packet {
-                            Packet::ServerLoginSuccess { name, uuid } => {
-                                connection.write().unwrap().state = ConnectionState::Play;
-                                println!("Logged in as {} with UUID: {:?}", name, uuid);
-                            }
 
-                            p => {
-                                dbg!(p);
-                            }
-                        },
-                        _ => (),
+                        Packet::ServerPlayerPositionAndLook {
+                            x,
+                            y,
+                            z,
+                            yaw,
+                            pitch,
+                            flags,
+                            teleportid,
+                        } => {
+                            /* outbound_sender.send(Packet::ClientChat {
+                                message: "!da is ne wand".to_string(),
+                            });*/
+                            println!("packet position bekommen");
+                            let mut lockedentity = entity.lock().unwrap();
+                            lockedentity.x = x;
+                            lockedentity.y = y;
+                            lockedentity.z = z;
+                            lockedentity.yaw = yaw;
+                            lockedentity.pitch = pitch;
+                            println!("eigene position angepasst bro");
+                        }
+
+                        Packet::ServerLoginSuccess { name, uuid } => {
+                            connection.write().unwrap().state = ConnectionState::Play;
+                            println!("Logged in as {} with UUID: {:?}", name, uuid);
+                        }
+                        p => {
+                            dbg!(p);
+                        }
                     }
                 }
             }
@@ -257,8 +283,15 @@ fn bot(name: String) {
 fn compareLoc(entity1: &Entity, entity2: &Entity) -> bool {
     let mut out = false;
     out = eq(entity1.x, entity2.x, 0.5);
-    out = eq(entity1.y, entity2.y, 0.5);
-    out = eq(entity1.z, entity2.z, 0.5);
+    if (out) {
+        out = eq(entity1.y, entity2.y, 0.5);
+    }
+    if (out) {
+        out = eq(entity1.z, entity2.z, 0.5);
+    }
+
+    //kann auch mit && gemacht werden bro
+
     out
 }
 

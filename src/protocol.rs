@@ -1,6 +1,8 @@
 use crate::compression::*;
 use crate::game::CompressionStatus::Enabled;
 use crate::game::{CompressionStatus, ConnectionState, MinecraftConnection};
+#[macro_use]
+use crate::macros;
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use err_derive::Error;
 use flate2::read::{ZlibDecoder, ZlibEncoder};
@@ -112,25 +114,27 @@ impl RawPacketValue {
 
 #[derive(Debug, Error)]
 pub enum PacketError {
-    #[error(display = "packet not implemented: ID 0x{:02X}", id)]
-    UnknownPacketIdentifier { id: i32 },
+    #[error(
+        display = "packet not implemented for state '{:?}': ID 0x{:02X}",
+        state,
+        id
+    )]
+    UnknownPacketIdentifier { id: i32, state: ConnectionState },
     #[error(display = "malformed packet: {}", 0)]
     MalformedPacket(&'static str),
     #[error(display = "i/o error while deserializing packet: {:?}", 0)]
     DeserializeIOError(std::io::Error),
-    #[error(display = "du bastard")]
-    SockySockyNoBlocky,
 }
 
-#[derive(Debug, Clone)]
-pub enum Packet {
+impl_packets! {
+    Packet, PacketType,
     ///////// C -> S (serverbound)
     // Login state
-    ClientHandshake {
+    None, Server, 0x00, ClientHandshake {
         host_address: String,
         port: u16,
     },
-    ClientJoin {
+    Login, Server, 0x00, ClientJoin {
         player_name: String,
     },
 
@@ -138,24 +142,27 @@ pub enum Packet {
     // ..
 
     // Play state
-    ClientKeepAlive {
-        magic: i32,
+    Play, Server, 0x0F, ClientKeepAlive {
+        magic: i64,
     },
-    ClientPlayerPosition {
+    Play, Server, 0x04, ClientPlayerPosition {
         x: f64,
         y: f64,
         z: f64,
         onground: bool,
     },
-    ClientPlayerLook {
+    Play, Server, 0x05 ,ClientPlayerLook {
         yaw: f32,
         pitch: f32,
         onground: bool,
     },
-    ClientChat {
+    Play, Server, 0x03, ClientChat {
         message: String,
     },
-    ClientPlayerPositionAndLook {
+    Play, Server, 0x23 ,ClientHeldItemChange {
+        slot: i16,
+    },
+    Play, Server, 0x06 ,ClientPlayerPositionAndLook {
         x: f64,
         y: f64,
         z: f64,
@@ -165,29 +172,37 @@ pub enum Packet {
     },
     ///////// S -> C (clientbound)
     // Login state
-    ServerCompressionLevelSet {
+    Login, Client, 0x03 ,ServerCompressionLevelSet {
         compression_level: i32,
     },
-    ServerLoginSuccess {
+     Login, Client, 0x02 ,ServerLoginSuccess {
         uuid: String,
         name: String,
+    },
+     Login, Client, 0x01 ,ServerEncryptionRequest {
+        serverid: String,
+        pubkey: Vec<u8>,
+        verifytoken: Vec<u8>,
     },
     // Status state
     // ..
 
     // Play state
-    ServerKeepAlive {
-        magic: i32,
+    Play, Client, 0x20 ,ServerKeepAlive {
+        magic: i64,
     },
-    ServerWorldTimeUpdate {
+    Play, Client, 0x4E ,ServerWorldTimeUpdate {
         age: i64,
         time: i64,
     },
-    ServerChatPacket {
+    Play, Client, 0x1A ,ServerDisconnectPacket {
+        reason: String,
+    },
+    Play, Client, 0x0E ,ServerChatPacket {
         message: String,
         position: i8,
     },
-    ServerJoinGame {
+    Play, Client, 0x25 ,ServerJoinGame {
         entity_id: i32,
         gamemode: u8,
         dimension: i8,
@@ -196,13 +211,14 @@ pub enum Packet {
         level_type: String,
         reduced_debug_info: bool,
     },
-    ServerPlayerPositionAndLook {
+    Play, Client, 0x35 ,ServerPlayerPositionAndLook {
         x: f64,
         y: f64,
         z: f64,
         yaw: f32,
         pitch: f32,
         flags: i8,
+        teleportid: i32,
     },
 }
 
@@ -222,17 +238,23 @@ impl Packet {
         buf.read_exact(&mut packet)
             .map_err(|e| PacketError::DeserializeIOError(e))?;
         let mut packet_cursor = Cursor::new(packet.clone());
-        let mut packet_data_cursor = Cursor::new(packet.clone());
+        let mut packet_data_cursor = Cursor::new(vec![0u8; packet_len as usize]);
 
         if let Enabled(compression_level) = connection.compression {
             let uncompressed_size = packet_cursor
                 .read_var_i32()
                 .map_err(|e| PacketError::DeserializeIOError(e))?;
+
             if uncompressed_size != 0 {
                 let mut new = Vec::with_capacity(uncompressed_size as usize);
                 {
                     let mut reader = ZlibDecoder::new(packet_cursor);
-                    reader.read_to_end(&mut new);
+                    match reader.read_to_end(&mut new) {
+                        Err(e) => {
+                            dbg!(e);
+                        }
+                        Ok(_) => (),
+                    };
                 }
 
                 packet_data_cursor = io::Cursor::new(new);
@@ -253,9 +275,58 @@ impl Packet {
                     type_id, packet_len, &connection.compression, &connection.state, packet_data_cursor
                 );
         */
-        match connection.state {
-            ConnectionState::Login => match type_id {
-                0x02 => {
+        // println!("state: {:10?}, id: 0x{:02X}", connection.state, type_id);
+
+        let packet_type =
+            PacketType::from_state_and_id_and_direction(connection.state, type_id, BoundTo::Client);
+
+        if let Some(packet_type) = packet_type {
+            println!("PacketType: {:?} ", packet_type);
+            match packet_type {
+                PacketType::ServerEncryptionRequest => {
+                    let mut sbuf = vec![0u8; 20 as usize];
+                    packet_data_cursor.read_exact(&mut sbuf);
+                    let serverid = String::from_utf8_lossy(&sbuf).to_string();
+                    let packet_fields = read_values_from_template(
+                        &mut packet_data_cursor,
+                        &[RawPacketValueType::varint, RawPacketValueType::varint],
+                    )
+                    .map_err(|io_err| PacketError::DeserializeIOError(io_err))?;
+
+                    if let [RawPacketValue::varint(pubkeylen), RawPacketValue::varint(vertokenlen)] =
+                        packet_fields.as_slice()
+                    {
+                        let mut pubkey = vec![0u8; *pubkeylen as usize];
+                        packet_data_cursor.read_exact(&mut pubkey);
+                        let mut verifytoken = vec![0u8; *vertokenlen as usize];
+                        packet_data_cursor.read_exact(&mut verifytoken);
+
+                        Ok(Packet::ServerEncryptionRequest {
+                            serverid,
+                            pubkey,
+                            verifytoken,
+                        })
+                    } else {
+                        Err(PacketError::MalformedPacket("neger"))
+                    }
+                }
+                PacketType::ServerDisconnectPacket => {
+                    let packet_fields = read_values_from_template(
+                        &mut packet_data_cursor,
+                        &[RawPacketValueType::String],
+                    )
+                    .map_err(|io_err| PacketError::DeserializeIOError(io_err))?;
+
+                    if let [RawPacketValue::String(reason)] = packet_fields.as_slice() {
+                        Ok(Packet::ServerDisconnectPacket {
+                            reason: reason.clone(),
+                        })
+                    } else {
+                        Err(PacketError::MalformedPacket("join packet romped"))
+                    }
+                }
+                // state:Login
+                PacketType::ServerLoginSuccess => {
                     let packet_fields = read_values_from_template(
                         &mut packet_data_cursor,
                         &[RawPacketValueType::String, RawPacketValueType::String],
@@ -274,7 +345,7 @@ impl Packet {
                     }
                 }
 
-                0x03 => {
+                PacketType::ServerCompressionLevelSet => {
                     let packet_fields = read_values_from_template(
                         &mut packet_data_cursor,
                         &[RawPacketValueType::varint],
@@ -290,23 +361,21 @@ impl Packet {
                     }
                 }
 
-                id => Err(PacketError::UnknownPacketIdentifier { id }),
-            },
-            ConnectionState::Play => match type_id {
-                0x00 => {
+                //  state: Play
+                PacketType::ServerKeepAlive => {
                     let packet_fields = read_values_from_template(
                         &mut packet_data_cursor,
-                        &[RawPacketValueType::varint],
+                        &[RawPacketValueType::long],
                     )
                     .map_err(|io_err| PacketError::DeserializeIOError(io_err))?;
 
-                    if let [RawPacketValue::varint(magic)] = packet_fields.as_slice() {
+                    if let [RawPacketValue::long(magic)] = packet_fields.as_slice() {
                         Ok(Packet::ServerKeepAlive { magic: *magic })
                     } else {
                         Err(PacketError::MalformedPacket("KeepAlive packet was BRRRRed"))
                     }
                 }
-                0x01 => {
+                PacketType::ServerJoinGame => {
                     let packet_fields = read_values_from_template(
                         &mut packet_data_cursor,
                         &[
@@ -337,7 +406,7 @@ impl Packet {
                         Err(PacketError::MalformedPacket("Handshake packet was BRRRRed"))
                     }
                 }
-                0x02 => {
+                PacketType::ServerChatPacket => {
                     let packet_fields = read_values_from_template(
                         &mut packet_data_cursor,
                         &[RawPacketValueType::String, RawPacketValueType::byte],
@@ -355,7 +424,7 @@ impl Packet {
                         Err(PacketError::MalformedPacket("Handshake packet was BRRRRed"))
                     }
                 }
-                0x03 => {
+                PacketType::ServerWorldTimeUpdate => {
                     let packet_fields = read_values_from_template(
                         &mut packet_data_cursor,
                         &[RawPacketValueType::long, RawPacketValueType::long],
@@ -373,7 +442,7 @@ impl Packet {
                         Err(PacketError::MalformedPacket("Handshake packet was BRRRRed"))
                     }
                 }
-                0x08 => {
+                PacketType::ServerPlayerPositionAndLook => {
                     let packet_fields = read_values_from_template(
                         &mut packet_data_cursor,
                         &[
@@ -383,11 +452,12 @@ impl Packet {
                             RawPacketValueType::float,
                             RawPacketValueType::float,
                             RawPacketValueType::byte,
+                            RawPacketValueType::varint,
                         ],
                     )
                     .map_err(|io_err| PacketError::DeserializeIOError(io_err))?;
 
-                    if let [RawPacketValue::double(x), RawPacketValue::double(y), RawPacketValue::double(z), RawPacketValue::float(yaw), RawPacketValue::float(pitch), RawPacketValue::byte(flags)] =
+                    if let [RawPacketValue::double(x), RawPacketValue::double(y), RawPacketValue::double(z), RawPacketValue::float(yaw), RawPacketValue::float(pitch), RawPacketValue::byte(flags), RawPacketValue::varint(teleportid)] =
                         packet_fields.as_slice()
                     {
                         Ok(Packet::ServerPlayerPositionAndLook {
@@ -397,41 +467,29 @@ impl Packet {
                             yaw: *yaw,
                             pitch: *pitch,
                             flags: *flags,
+                            teleportid: *teleportid,
                         })
                     } else {
                         Err(PacketError::MalformedPacket("Handshake packet was BRRRRed"))
                     }
                 }
-                id => Err(PacketError::UnknownPacketIdentifier { id }),
-            },
-            _ => unimplemented!("state"),
-        }
-    }
-
-    pub fn packet_type_id(&self) -> i32 {
-        match &self {
-            Packet::ClientHandshake { .. } => 0x00,
-            Packet::ClientJoin { .. } => 0x00,
-            Packet::ClientKeepAlive { .. } => 0x00,
-            Packet::ClientPlayerPosition { .. } => 0x4,
-            Packet::ClientPlayerLook { .. } => 0x05,
-            Packet::ClientPlayerPositionAndLook { .. } => 0x06,
-            Packet::ClientChat { .. } => 0x01,
-
-            Packet::ServerPlayerPositionAndLook { .. } => 0x08,
-            Packet::ServerCompressionLevelSet { .. } => 0x03,
-            Packet::ServerWorldTimeUpdate { .. } => 0x03,
-            Packet::ServerLoginSuccess { .. } => 0x02,
-            Packet::ServerChatPacket { .. } => 0x02,
-            Packet::ServerKeepAlive { .. } => 0x00,
-            Packet::ServerJoinGame { .. } => 0x01,
+                (p) => {
+                    dbg!(p);
+                    Err(PacketError::MalformedPacket("Handshake packet was BRRRRed"))
+                }
+            }
+        } else {
+            Err(PacketError::UnknownPacketIdentifier {
+                id: type_id,
+                state: connection.state,
+            })
         }
     }
 
     /// Takes the packet and serializes it for the server to receive
     pub fn serialize(self, connection: &MinecraftConnection) -> IOResult<Vec<u8>> {
         let mut buf = Vec::new();
-        let my_id = self.packet_type_id();
+        let my_id = self.ty().id();
 
         Ok(match self {
             Packet::ClientHandshake { host_address, port } => {
@@ -439,7 +497,7 @@ impl Packet {
                     &mut buf,
                     my_id,
                     &[
-                        RawPacketValue::varint(47),
+                        RawPacketValue::varint(498), //TODO: CONST
                         RawPacketValue::String(host_address),
                         RawPacketValue::ushort(port),
                         RawPacketValue::varint(2),
@@ -461,7 +519,7 @@ impl Packet {
                 write_packet_fields(
                     &mut buf,
                     my_id,
-                    &[RawPacketValue::varint(magic)],
+                    &[RawPacketValue::long(magic)],
                     &connection.compression,
                 )?;
                 buf
@@ -531,6 +589,15 @@ impl Packet {
                     &mut buf,
                     my_id,
                     &[RawPacketValue::String(message)],
+                    &connection.compression,
+                )?;
+                buf
+            }
+            Packet::ClientHeldItemChange { slot } => {
+                write_packet_fields(
+                    &mut buf,
+                    my_id,
+                    &[RawPacketValue::short(slot)],
                     &connection.compression,
                 )?;
                 buf
