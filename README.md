@@ -1,3 +1,3 @@
 # minecraftbot
 
-> currently only supports 1.8
+> WIP will support newest version on wiki.vg 
